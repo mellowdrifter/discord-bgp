@@ -23,8 +23,17 @@ def remove_alert_key(content) -> str:
     return content[1:]
 
 
-def get_route(prefix: str, bgp):
-    route = bgp.get_route(prefix)
+def no_200() -> str:
+    return "unable to query bgpstuff.net api"
+
+
+def route(prefix: str, bgp) -> str:
+    bgp.get_route(prefix)
+    if bgp.status_code != 200:
+        return no_200()
+    if not bgp.exists:
+        return (f"no prefix exists for {prefix}")
+    return (f"the route for {prefix} is {bgp.route}")
 
 
 if __name__ == "__main__":
@@ -60,8 +69,8 @@ if __name__ == "__main__":
             return
 
         print(f"Tryting to get {request[0]} for {request[1]}")
-        bgp.get_route(request[1])
-        print(bgp.route)
+        req = route(request[1], bgp)
+        print(req)
 
         print(f"{message.author} said {content}")
         await message.channel.send(bgp.route)

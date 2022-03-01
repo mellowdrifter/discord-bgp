@@ -14,7 +14,7 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 ALERTKEY = "%"
 
 COMMANDS = ["route", "origin", "aspath",
-            "asname", "invalids", "totals", "help"]
+            "asname", "invalids", "totals", "sourced"]
 
 logging.basicConfig(
     level=logging.INFO, format='%(asctime)s: %(levelname)s: %(message)s')
@@ -30,7 +30,7 @@ Commands:
   % aspath - Returns the AS path I see to get to the passed in IP address
   % roa - Returns the ROA status of the passed in IP address
   % asname - Returns the AS name from the passed in AS number
-  % invalid - Returns all RPKI invalid prefixes advertised from the passed in AS number
+  % invalids - Returns all RPKI invalid prefixes advertised from the passed in AS number
   % vrps - Returns all Validated ROA Payloads for the passed in AS number
   % sourced - Returns all prefixes originated from the passed in AS number
   % totals - Returns the current IPv4 and IPv6 active prefix count
@@ -61,6 +61,19 @@ def red_quote(txt: str) -> str:
 
 def quote(txt: str) -> str:
     return f"```{txt}```"
+
+
+def split_text_green_quote(txt: str) -> List[str]:
+    splittxt = txt.split("\n")
+    rejoined = ['\n'.join(splittxt[i:i+80])
+                for i in range(0, len(splittxt), 80)]
+    newtxt = []
+    for i in range(len(rejoined)):
+        if i == 0:
+            newtxt.append(green_quote(rejoined[i]))
+        else:
+            newtxt.append(quote(rejoined[i]))
+    return newtxt
 
 
 def totals(bgp) -> str:
@@ -138,23 +151,42 @@ def asname(asnum: int, bgp) -> str:
 
 
 def invalids(asnum: int, bgp) -> str:
-    # TODO: make sure this is actually an int!
     # TODO: do i need to get them all?
+    # TODO: keep a map or something?
     bgp.get_invalids()
     if bgp.status_code != 200:
         return no_200()
     return (f"{bgp.invalids(int(asnum))}")
 
 
+def sourced(asnum: int, bgp) -> str:
+    try:
+        num = int(asnum)
+    except ValueError:
+        return red_quote(f"{asnum} is not an integer")
+    try:
+        bgp.get_sourced_prefixes(num)
+    except ValueError as ve:
+        return red_quote(ve)
+    except Exception as e:
+        logging.debug(e)
+    if bgp.status_code != 200:
+        return no_200(bgp.status_code)
+    if not bgp.exists:
+        return yellow_quote(f"AS{asnum} is not sourcing any prefixes")
+    prefixes = "\n\t".join(map(str, bgp.sourced))
+    return split_text_green_quote(f"AS{asnum} is sourcing the following prefixes:\n\t{prefixes}")
+
+
 if __name__ == "__main__":
     dis = discord.Client()
     bgp = bgpstuff.Client()
 
-    @dis.event
+    @ dis.event
     async def on_ready():
         print(f'{dis.user} has connected to Discord!')
 
-    @dis.event
+    @ dis.event
     async def on_message(message):
         # bot should not respond to its own message
         if message.author == dis.user:
@@ -166,7 +198,7 @@ if __name__ == "__main__":
 
         # If there is no query, return help message and return
         request = decode_request(message.content)
-        if len(request) <= 1:
+        if len(request) == 0:
             await send_help(message.channel)
             return
 
@@ -204,13 +236,23 @@ if __name__ == "__main__":
             await message.channel.send(req)
             return
 
+        elif request[0].lower() == "sourced":
+            req = sourced(request[1], bgp)
+            logging.info(req)
+            if type(req) == list:
+                for msg in req:
+                    await message.channel.send(msg)
+            else:
+                await message.channel.send(req)
+            return
+
         elif request[0].lower() == "totals":
             req = totals(bgp)
             logging.info(req)
             await message.channel.send(req)
             return
 
-        elif request[0].lower() == "help":
+        else:
             await send_help(message.channel)
 
     dis.run(TOKEN)

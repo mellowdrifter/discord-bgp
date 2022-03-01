@@ -4,6 +4,7 @@
 import os
 import bgpstuff
 import discord
+import logging
 from typing import List
 from dotenv import load_dotenv
 
@@ -12,12 +13,28 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 ALERTKEY = "%"
 
-COMMANDS = ["route", "origin", "aspath", "asname", "invalids", "totals"]
+COMMANDS = ["route", "origin", "aspath",
+            "asname", "invalids", "totals", "help"]
+
+logging.basicConfig(
+    level=logging.INFO, format='%(asctime)s: %(levelname)s: %(message)s')
 
 
 async def send_help(channel):
-    print("sending help")
-    return await channel.send("You FOOL")
+    return await channel.send(quote("""
+bgpstuff.net help.
+
+Commands:
+  % route - Returns the active RIB entry for the passed in IP address
+  % origin - Returns the origin AS number for the pass in IP address
+  % aspath - Returns the AS path I see to get to the passed in IP address
+  % roa - Returns the ROA status of the passed in IP address
+  % asname - Returns the AS name from the passed in AS number
+  % invalid - Returns all RPKI invalid prefixes advertised from the passed in AS number
+  % vrps - Returns all Validated ROA Payloads for the passed in AS number
+  % sourced - Returns all prefixes originated from the passed in AS number
+  % totals - Returns the current IPv4 and IPv6 active prefix count
+"""))
 
 
 def no_200(status_code: int) -> str:
@@ -42,6 +59,10 @@ def red_quote(txt: str) -> str:
     return f"`🔴 {txt}`"
 
 
+def quote(txt: str) -> str:
+    return f"```{txt}```"
+
+
 def totals(bgp) -> str:
     try:
         bgp.get_totals()
@@ -53,11 +74,13 @@ def totals(bgp) -> str:
 
 
 def route(prefix: str, bgp) -> str:
+    logging.info(f"route request for {prefix}")
     try:
         bgp.get_route(prefix)
     except ValueError as ve:
         return red_quote(ve)
-        # TODO: What about other exceptions?
+    except Exception as e:
+        logging.debug(e)
     if bgp.status_code != 200:
         return no_200(bgp.status_code)
     if not bgp.exists:
@@ -66,35 +89,52 @@ def route(prefix: str, bgp) -> str:
 
 
 def origin(prefix: str, bgp) -> str:
+    logging.info(f"origin request for {prefix}")
     try:
         bgp.get_origin(prefix)
     except ValueError as ve:
         return red_quote(ve)
+    except Exception as e:
+        logging.debug(e)
     if bgp.status_code != 200:
-        return no_200()
+        return no_200(bgp.status_code)
     if not bgp.exists:
         return yellow_quote(f"No prefix exists for {prefix}")
     return green_quote(f"The origin AS for {prefix} is AS{bgp.origin}")
 
 
 def aspath(prefix: str, bgp) -> str:
-    bgp.get_as_path(prefix)
+    logging.info(f"aspath request for {prefix}")
+    try:
+        bgp.get_as_path(prefix)
+    except ValueError as ve:
+        return red_quote(ve)
+    except Exception as e:
+        logging.debug(e)
     if bgp.status_code != 200:
-        return no_200()
+        return no_200(bgp.status_code)
     if not bgp.exists:
-        return (f"No prefix exists for {prefix}")
+        return yellow_quote(f"No prefix exists for {prefix}")
     path = " ".join(map(str, bgp.as_path))
-    return (f"The AS path for {prefix} is {path}")
+    return green_quote(f"The AS path for {prefix} is {path}")
 
 
 def asname(asnum: int, bgp) -> str:
-    # TODO: make sure this is actually an int!
-    bgp.get_as_name(int(asnum))
+    try:
+        num = int(asnum)
+    except ValueError:
+        return red_quote(f"{asnum} is not an integer")
+    try:
+        bgp.get_as_name(int(asnum))
+    except ValueError as ve:
+        return red_quote(ve)
+    except Exception as e:
+        logging.debug(e)
     if bgp.status_code != 200:
-        return no_200()
+        return no_200(bgp.status_code)
     if not bgp.exists:
-        return (f"No ASNAME exists for {asnum}")
-    return (f"The AS name for {asnum} is {bgp.as_name}")
+        return yellow_quote(f"No AS name exists for {asnum}")
+    return green_quote(f"The AS name for {asnum} is {bgp.as_name}")
 
 
 def invalids(asnum: int, bgp) -> str:
@@ -126,8 +166,7 @@ if __name__ == "__main__":
 
         # If there is no query, return help message and return
         request = decode_request(message.content)
-        if len(request) == 0:
-            print("nothing to do")
+        if len(request) <= 1:
             await send_help(message.channel)
             return
 
@@ -137,38 +176,41 @@ if __name__ == "__main__":
 
         if request[0].lower() == "route":
             req = route(request[1], bgp)
-            print(req)
+            logging.info(req)
             await message.channel.send(req)
             return
 
         elif request[0].lower() == "origin":
             req = origin(request[1], bgp)
-            print(req)
+            logging.info(req)
             await message.channel.send(req)
             return
 
         elif request[0].lower() == "aspath":
-            req = aspath(request[1])
-            print(req)
+            req = aspath(request[1], bgp)
+            logging.info(req)
             await message.channel.send(req)
             return
 
         elif request[0].lower() == "asname":
-            req = asname(request[1])
-            print(req)
+            req = asname(request[1], bgp)
+            logging.info(req)
             await message.channel.send(req)
             return
 
         elif request[0].lower() == "invalids":
             req = invalids(request[1])
-            print(req)
+            logging.info(req)
             await message.channel.send(req)
             return
 
         elif request[0].lower() == "totals":
             req = totals(bgp)
-            print(req)
+            logging.info(req)
             await message.channel.send(req)
             return
+
+        elif request[0].lower() == "help":
+            await send_help(message.channel)
 
     dis.run(TOKEN)

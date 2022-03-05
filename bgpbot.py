@@ -13,7 +13,7 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 ALERTKEY = "%"
 
-COMMANDS = ["route", "origin", "aspath",
+COMMANDS = ["route", "origin", "aspath", "roa",
             "asname", "invalids", "totals", "sourced"]
 
 logging.basicConfig(
@@ -109,6 +109,7 @@ def origin(prefix: str, bgp) -> str:
         return red_quote(ve)
     except Exception as e:
         logging.debug(e)
+        return
     if bgp.status_code != 200:
         return no_200(bgp.status_code)
     if not bgp.exists:
@@ -124,12 +125,33 @@ def aspath(prefix: str, bgp) -> str:
         return red_quote(ve)
     except Exception as e:
         logging.debug(e)
+        return
     if bgp.status_code != 200:
         return no_200(bgp.status_code)
     if not bgp.exists:
         return yellow_quote(f"No prefix exists for {prefix}")
     path = " ".join(map(str, bgp.as_path))
     return green_quote(f"The AS path for {prefix} is {path}")
+
+
+def roa(prefix: str, bgp) -> str:
+    logging.info(f"roa request for {prefix}")
+    try:
+        bgp.get_roa(prefix)
+    except ValueError as ve:
+        return red_quote(ve)
+    except Exception as e:
+        logging.debug(e)
+        return
+    if bgp.status_code != 200:
+        return no_200(bgp.status_code)
+    if not bgp.exists:
+        return yellow_quote(f"No prefix exists for {prefix}")
+
+    status = bgp.roa
+    if status == "UNKNOWN":
+        status = "UNKNOWN (NO ROA)"
+    return green_quote(f"The ROA status for {prefix} is {status}")
 
 
 def asname(asnum: int, bgp) -> str:
@@ -143,6 +165,7 @@ def asname(asnum: int, bgp) -> str:
         return red_quote(ve)
     except Exception as e:
         logging.debug(e)
+        return
     if bgp.status_code != 200:
         return no_200(bgp.status_code)
     if not bgp.exists:
@@ -170,6 +193,7 @@ def sourced(asnum: int, bgp) -> str:
         return red_quote(ve)
     except Exception as e:
         logging.debug(e)
+        return
     if bgp.status_code != 200:
         return no_200(bgp.status_code)
     if not bgp.exists:
@@ -208,36 +232,56 @@ if __name__ == "__main__":
 
         if request[0].lower() == "route":
             req = route(request[1], bgp)
+            if req == "":
+                return
             logging.info(req)
             await message.channel.send(req)
             return
 
         elif request[0].lower() == "origin":
             req = origin(request[1], bgp)
+            if req == "":
+                return
             logging.info(req)
             await message.channel.send(req)
             return
 
         elif request[0].lower() == "aspath":
             req = aspath(request[1], bgp)
+            if req == "":
+                return
+            logging.info(req)
+            await message.channel.send(req)
+            return
+
+        elif request[0].lower() == "roa":
+            req = roa(request[1], bgp)
+            if req == "":
+                return
             logging.info(req)
             await message.channel.send(req)
             return
 
         elif request[0].lower() == "asname":
             req = asname(request[1], bgp)
+            if req == "":
+                return
             logging.info(req)
             await message.channel.send(req)
             return
 
         elif request[0].lower() == "invalids":
             req = invalids(request[1])
+            if req == "":
+                return
             logging.info(req)
             await message.channel.send(req)
             return
 
         elif request[0].lower() == "sourced":
             req = sourced(request[1], bgp)
+            if req == "":
+                return
             logging.info(req)
             if type(req) == list:
                 for msg in req:
@@ -248,6 +292,8 @@ if __name__ == "__main__":
 
         elif request[0].lower() == "totals":
             req = totals(bgp)
+            if req == "":
+                return
             logging.info(req)
             await message.channel.send(req)
             return

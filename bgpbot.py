@@ -5,13 +5,18 @@ import os
 import bgpstuff
 import discord
 import logging
-from typing import List
+from cachetools import cached, TTLCache
 from dotenv import load_dotenv
+from typing import List
 
 load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 ALERTKEY = "%"
+ONE_MINUTE = 60
+FIVE_MINUTES = 5 * ONE_MINUTE
+ONE_HOUR = 60 * ONE_MINUTE
+TWENTY_FOUR_HOURS = 24 * ONE_HOUR
 
 COMMANDS = ["route", "origin", "aspath", "roa",
             "asname", "invalids", "totals", "sourced"]
@@ -76,6 +81,7 @@ def split_text_green_quote(txt: str) -> List[str]:
     return newtxt
 
 
+@cached(cache=TTLCache(maxsize=1, ttl=FIVE_MINUTES))
 def totals(bgp) -> str:
     try:
         bgp.get_totals()
@@ -86,9 +92,11 @@ def totals(bgp) -> str:
     return green_quote(f"I see {bgp.total_v4} IPv4 and {bgp.total_v6} IPv6 prefixes active")
 
 
+@cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
 def route(prefix: str, bgp) -> str:
     logging.info(f"route request for {prefix}")
     try:
+        logging.info("reaching out to API")
         bgp.get_route(prefix)
     except ValueError as ve:
         return red_quote(ve)
@@ -101,6 +109,7 @@ def route(prefix: str, bgp) -> str:
     return green_quote(f"The route for {prefix} is {bgp.route}")
 
 
+@cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
 def origin(prefix: str, bgp) -> str:
     logging.info(f"origin request for {prefix}")
     try:
@@ -117,6 +126,7 @@ def origin(prefix: str, bgp) -> str:
     return green_quote(f"The origin AS for {prefix} is AS{bgp.origin}")
 
 
+@cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
 def aspath(prefix: str, bgp) -> str:
     logging.info(f"aspath request for {prefix}")
     try:
@@ -134,6 +144,7 @@ def aspath(prefix: str, bgp) -> str:
     return green_quote(f"The AS path for {prefix} is {path}")
 
 
+@cached(cache=TTLCache(maxsize=20, ttl=FIVE_MINUTES))
 def roa(prefix: str, bgp) -> str:
     logging.info(f"roa request for {prefix}")
     try:
@@ -154,6 +165,7 @@ def roa(prefix: str, bgp) -> str:
     return green_quote(f"The ROA status for {prefix} is {status}")
 
 
+@cached(cache=TTLCache(maxsize=50, ttl=TWENTY_FOUR_HOURS))
 def asname(asnum: int, bgp) -> str:
     try:
         num = int(asnum)
@@ -182,6 +194,7 @@ def invalids(asnum: int, bgp) -> str:
     return (f"{bgp.invalids(int(asnum))}")
 
 
+@cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
 def sourced(asnum: int, bgp) -> str:
     try:
         num = int(asnum)
@@ -271,7 +284,7 @@ if __name__ == "__main__":
             return
 
         elif request[0].lower() == "invalids":
-            req = invalids(request[1])
+            req = invalids(request[1], bgp)
             if req == "":
                 return
             logging.info(req)

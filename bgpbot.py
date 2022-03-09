@@ -3,11 +3,12 @@
 
 import os
 import bgpstuff
+import bogons
 import discord
 import logging
 from cachetools import cached, TTLCache
 from dotenv import load_dotenv
-from typing import List
+from typing import Dict, List
 
 load_dotenv()
 
@@ -53,15 +54,15 @@ def decode_request(req: str) -> List[str]:
 
 
 def green_quote(txt: str) -> str:
-    return f"`🟢 {txt}`"
+    return f"```🟢 {txt}```"
 
 
 def yellow_quote(txt: str) -> str:
-    return f"`🟡 {txt}`"
+    return f"```🟡 {txt}```"
 
 
 def red_quote(txt: str) -> str:
-    return f"`🔴 {txt}`"
+    return f"```🔴 {txt}```"
 
 
 def quote(txt: str) -> str:
@@ -76,6 +77,19 @@ def split_text_green_quote(txt: str) -> List[str]:
     for i in range(len(rejoined)):
         if i == 0:
             newtxt.append(green_quote(rejoined[i]))
+        else:
+            newtxt.append(quote(rejoined[i]))
+    return newtxt
+
+
+def split_text_yellow_quote(txt: str) -> List[str]:
+    splittxt = txt.split("\n")
+    rejoined = ['\n'.join(splittxt[i:i+80])
+                for i in range(0, len(splittxt), 80)]
+    newtxt = []
+    for i in range(len(rejoined)):
+        if i == 0:
+            newtxt.append(yellow_quote(rejoined[i]))
         else:
             newtxt.append(quote(rejoined[i]))
     return newtxt
@@ -165,33 +179,68 @@ def roa(prefix: str, bgp) -> str:
     return green_quote(f"The ROA status for {prefix} is {status}")
 
 
-@cached(cache=TTLCache(maxsize=50, ttl=TWENTY_FOUR_HOURS))
+@cached(cache=TTLCache(maxsize=50, ttl=ONE_HOUR))
 def asname(asnum: int, bgp) -> str:
     try:
         num = int(asnum)
     except ValueError:
         return red_quote(f"{asnum} is not an integer")
+
+    if not bogons.valid_public_asn(num):
+        return red_quote(f"{asnum} is not a valid ASN")
+
+    names = asnames(bgp)
+    if num in names:
+        return green_quote(f"The AS name for {num} is {names[num]}")
+    else:
+        return yellow_quote(f"No AS name exists for {asnum}")
+
+
+@cached(cache=TTLCache(maxsize=1, ttl=TWENTY_FOUR_HOURS))
+def asnames(bgp) -> Dict:
     try:
-        bgp.get_as_name(int(asnum))
-    except ValueError as ve:
-        return red_quote(ve)
+        bgp.get_as_names()
     except Exception as e:
         logging.debug(e)
         return
     if bgp.status_code != 200:
-        return no_200(bgp.status_code)
-    if not bgp.exists:
-        return yellow_quote(f"No AS name exists for {asnum}")
-    return green_quote(f"The AS name for {asnum} is {bgp.as_name}")
+        # TODO: This really the best return?
+        logging.debug(bgp.status_code)
+        return
+    return bgp.all_as_names
 
 
+@cached(cache=TTLCache(maxsize=20, ttl=FIVE_MINUTES))
 def invalids(asnum: int, bgp) -> str:
-    # TODO: do i need to get them all?
-    # TODO: keep a map or something?
-    bgp.get_invalids()
+    try:
+        num = int(asnum)
+    except ValueError:
+        return red_quote(f"{asnum} is not an integer")
+
+    if not bogons.valid_public_asn(num):
+        return red_quote(f"{asnum} is not a valid ASN")
+
+    invalids = all_invalids(bgp)
+    if num in invalids:
+        prefixes = "\n\t".join(map(str, invalids[num]))
+        return split_text_yellow_quote(f"AS{asnum} is originating the following invalid prefixes:\n\t{prefixes}")
+    else:
+        return green_quote(f"AS{num} is not originating any invalid prefixes")
+
+
+@cached(cache=TTLCache(maxsize=1, ttl=ONE_HOUR))
+def all_invalids(bgp) -> Dict:
+    print("Getting all invalids from API")
+    try:
+        bgp.get_invalids()
+    except Exception as e:
+        logging.debug(e)
+        return
     if bgp.status_code != 200:
-        return no_200()
-    return (f"{bgp.invalids(int(asnum))}")
+        # TODO: This really the best return?
+        logging.debug(bgp.status_code)
+        return
+    return bgp.all_invalids
 
 
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
@@ -200,6 +249,7 @@ def sourced(asnum: int, bgp) -> str:
         num = int(asnum)
     except ValueError:
         return red_quote(f"{asnum} is not an integer")
+
     try:
         bgp.get_sourced_prefixes(num)
     except ValueError as ve:
@@ -288,7 +338,11 @@ if __name__ == "__main__":
             if req == "":
                 return
             logging.info(req)
-            await message.channel.send(req)
+            if type(req) == list:
+                for msg in req:
+                    await message.channel.send(msg)
+            else:
+                await message.channel.send(req)
             return
 
         elif request[0].lower() == "sourced":

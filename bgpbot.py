@@ -20,7 +20,7 @@ ONE_HOUR = 60 * ONE_MINUTE
 TWENTY_FOUR_HOURS = 24 * ONE_HOUR
 
 COMMANDS = ["route", "origin", "aspath", "roa",
-            "asname", "invalids", "totals", "sourced"]
+            "asname", "invalids", "totals", "sourced", "vrps"]
 
 logging.basicConfig(
     level=logging.INFO, format='%(asctime)s: %(levelname)s: %(message)s')
@@ -243,6 +243,28 @@ def all_invalids(bgp) -> Dict:
     return bgp.all_invalids
 
 
+@cached(cache=TTLCache(maxsize=20, ttl=FIVE_MINUTES))
+def vrps(asnum: int, bgp) -> str:
+    try:
+        num = int(asnum)
+    except ValueError:
+        return red_quote(f"{asnum} is not an integer")
+
+    try:
+        vrps = bgp.get_vrps(num)
+    except ValueError as ve:
+        return red_quote(ve)
+    except Exception as e:
+        logging.debug(e)
+        return
+    if bgp.status_code != 200:
+        return no_200(bgp.status_code)
+    if not bgp.vrps:
+        return yellow_quote(f"AS{num} has no VRPs")
+    vrps = "\n\t".join(map(str, bgp.vrps))
+    return split_text_green_quote(f"AS{asnum} has the following VRPs:\n\t{vrps}")
+
+
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
 def sourced(asnum: int, bgp) -> str:
     try:
@@ -355,6 +377,17 @@ if __name__ == "__main__":
                     await message.channel.send(msg)
             else:
                 await message.channel.send(req)
+            return
+
+        elif request[0].lower() == "vrps":
+            req = vrps(request[1], bgp)
+            if req:
+                logging.info(req)
+                if type(req) == list:
+                    for msg in req:
+                        await message.channel.send(msg)
+                else:
+                    await message.channel.send(req)
             return
 
         elif request[0].lower() == "totals":

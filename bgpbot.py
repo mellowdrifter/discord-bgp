@@ -19,7 +19,7 @@ FIVE_MINUTES = 5 * ONE_MINUTE
 ONE_HOUR = 60 * ONE_MINUTE
 TWENTY_FOUR_HOURS = 24 * ONE_HOUR
 
-COMMANDS = ["route", "origin", "aspath", "roa",
+COMMANDS = ["route", "origin", "aspath", "roa", "help",
             "asname", "invalids", "totals", "sourced", "vrps"]
 
 logging.basicConfig(
@@ -313,6 +313,10 @@ if __name__ == "__main__":
 
         # Only respond to approved commands
         if request[0].lower() not in COMMANDS:
+            return
+
+        if request[0].lower() == "help":
+            await send_help(message.channel)
             return
 
         if request[0].lower() == "route":

@@ -32,7 +32,7 @@ bgpstuff.net help.
 
 Commands:
   % route - Returns the active RIB entry for the passed in IP address
-  % origin - Returns the origin AS number for the pass in IP address
+  % origin - Returns the origin AS number for the passed in IP address
   % aspath - Returns the AS path I see to get to the passed in IP address
   % roa - Returns the ROA status of the passed in IP address
   % asname - Returns the AS name from the passed in AS number
@@ -287,10 +287,7 @@ def sourced(asnum: int, bgp) -> str:
     return split_text_green_quote(f"AS{asnum} is sourcing the following prefixes:\n\t{prefixes}")
 
 
-if __name__ == "__main__":
-    dis = discord.Client()
-    bgp = bgpstuff.Client()
-
+def start(dis, bgp):
     @ dis.event
     async def on_ready():
         print(f'{dis.user} has connected to Discord!')
@@ -406,3 +403,9 @@ if __name__ == "__main__":
             await send_help(message.channel)
 
     dis.run(TOKEN)
+
+
+if __name__ == "__main__":
+    dis = discord.Client()
+    bgp = bgpstuff.Client()
+    start(dis, bgp)

@@ -217,6 +217,7 @@ def roa(prefix: str, bgp) -> str:
 
 @cached(cache=TTLCache(maxsize=50, ttl=ONE_HOUR))
 def asname(asnum: int, bgp) -> str:
+    logging.info(f"asname request for {asnum}")
     try:
         num = int(asnum)
     except ValueError:
@@ -224,13 +225,19 @@ def asname(asnum: int, bgp) -> str:
 
     if not bogons.valid_public_asn(num):
         return red_quote(f"{asnum} is not a valid ASN")
-
-    names = asnames(bgp)
-    if num in names:
-        return green_quote(f"The AS name for {num} is {names[num]}")
-    else:
+    
+    try:
+        name = bgp.get_as_name(num)
+    except ValueError as ve:
+        return red_quote(ve)
+    except Exception as e:
+        logging.debug(e)
+        return
+    
+    if not bgp.exists:
         return yellow_quote(f"No AS name exists for {asnum}")
 
+    return green_quote(f"The AS name for {num} is {bgp.as_name}")
 
 @cached(cache=TTLCache(maxsize=1, ttl=TWENTY_FOUR_HOURS))
 def asnames(bgp) -> Dict:
@@ -454,6 +461,8 @@ def start(dis, bgp):
 
 
 if __name__ == "__main__":
-    dis = discord.Client()
+    intents = discord.Intents.default()
+    intents.message_content = True
+    dis = discord.Client(intents=intents)
     bgp = bgpstuff.Client()
     start(dis, bgp)

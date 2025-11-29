@@ -6,6 +6,7 @@ import bgpstuff
 import bogons
 import discord
 import logging
+from discord.ext import commands
 from cachetools import cached, TTLCache
 from dotenv import load_dotenv
 from typing import Dict, List
@@ -19,27 +20,75 @@ FIVE_MINUTES = 5 * ONE_MINUTE
 ONE_HOUR = 60 * ONE_MINUTE
 TWENTY_FOUR_HOURS = 24 * ONE_HOUR
 
-COMMANDS = [
-    "route",
-    "origin",
-    "aspath",
-    "roa",
-    "help",
-    "asname",
-    "invalids",
-    "totals",
-    "sourced",
-    "vrps",
-    "geoip",
-]
-
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s: %(levelname)s: %(message)s"
 )
 
+# Initialize Bot
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix=ALERTKEY, intents=intents, help_command=None)
+bgp_client = bgpstuff.Client()
 
-async def send_help(channel):
-    return await channel.send(
+def no_200(status_code: int) -> str:
+    # TODO: this is wrong...
+    return "unable to query bgpstuff.net api"
+
+def green_quote(txt: str) -> str:
+    return f"```🟢 {txt}```"
+
+def yellow_quote(txt: str) -> str:
+    return f"```🟡 {txt}```"
+
+def red_quote(txt: str) -> str:
+    return f"```🔴 {txt}```"
+
+def quote(txt: str) -> str:
+    return f"```{txt}```"
+
+def split_text_green_quote(txt: str) -> List[str]:
+    splittxt = txt.split("\n")
+    rejoined = ["\n".join(splittxt[i : i + 80]) for i in range(0, len(splittxt), 80)]
+    newtxt = []
+    for i in range(len(rejoined)):
+        if i == 0:
+            newtxt.append(green_quote(rejoined[i]))
+        else:
+            newtxt.append(quote(rejoined[i]))
+    return newtxt
+
+def split_text_yellow_quote(txt: str) -> List[str]:
+    splittxt = txt.split("\n")
+    rejoined = ["\n".join(splittxt[i : i + 80]) for i in range(0, len(splittxt), 80)]
+    newtxt = []
+    for i in range(len(rejoined)):
+        if i == 0:
+            newtxt.append(yellow_quote(rejoined[i]))
+        else:
+            newtxt.append(quote(rejoined[i]))
+    return newtxt
+
+@bot.event
+async def on_ready():
+    print(f"{bot.user} has connected to Discord!")
+
+@bot.event
+async def on_message(message):
+    # bot should not respond to its own message
+    if message.author == bot.user:
+        return
+
+    # If the message is exactly the alert key, send help
+    if message.content.strip() == ALERTKEY:
+        await help_command(await bot.get_context(message))
+        return
+
+    await bot.process_commands(message)
+
+@bot.command(name="help")
+async def help_command(ctx):
+    """bgpstuff.net help."""
+    await ctx.send(
         quote(
             """
 bgpstuff.net help.
@@ -59,59 +108,8 @@ Commands:
         )
     )
 
-
-def no_200(status_code: int) -> str:
-    # TODO: this is wrong...
-    return "unable to query bgpstuff.net api"
-
-
-def decode_request(req: str) -> List[str]:
-    # Remove the alert key, which may or may not have a space after
-    return req[1:].split()
-
-
-def green_quote(txt: str) -> str:
-    return f"```🟢 {txt}```"
-
-
-def yellow_quote(txt: str) -> str:
-    return f"```🟡 {txt}```"
-
-
-def red_quote(txt: str) -> str:
-    return f"```🔴 {txt}```"
-
-
-def quote(txt: str) -> str:
-    return f"```{txt}```"
-
-
-def split_text_green_quote(txt: str) -> List[str]:
-    splittxt = txt.split("\n")
-    rejoined = ["\n".join(splittxt[i : i + 80]) for i in range(0, len(splittxt), 80)]
-    newtxt = []
-    for i in range(len(rejoined)):
-        if i == 0:
-            newtxt.append(green_quote(rejoined[i]))
-        else:
-            newtxt.append(quote(rejoined[i]))
-    return newtxt
-
-
-def split_text_yellow_quote(txt: str) -> List[str]:
-    splittxt = txt.split("\n")
-    rejoined = ["\n".join(splittxt[i : i + 80]) for i in range(0, len(splittxt), 80)]
-    newtxt = []
-    for i in range(len(rejoined)):
-        if i == 0:
-            newtxt.append(yellow_quote(rejoined[i]))
-        else:
-            newtxt.append(quote(rejoined[i]))
-    return newtxt
-
-
 @cached(cache=TTLCache(maxsize=1, ttl=FIVE_MINUTES))
-def totals(bgp) -> str:
+def get_totals(bgp) -> str:
     try:
         bgp.get_totals()
     except Exception as e:
@@ -122,9 +120,21 @@ def totals(bgp) -> str:
         f"I see {bgp.total_v4} IPv4 and {bgp.total_v6} IPv6 prefixes active"
     )
 
+def clean_msg(msg):
+    if isinstance(msg, list):
+        return [clean_msg(m) for m in msg]
+    return msg.replace("```🟢 ", "").replace("```🟡 ", "").replace("```🔴 ", "").replace("```", "").strip()
+
+@bot.command(name="totals")
+async def totals_command(ctx):
+    """Returns the current IPv4 and IPv6 active prefix count"""
+    req = get_totals(bgp_client)
+    if req:
+        logging.info(clean_msg(req))
+        await ctx.send(req)
 
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
-def route(prefix: str, bgp) -> str:
+def get_route(prefix: str, bgp) -> str:
     logging.info(f"route request for {prefix}")
     try:
         logging.info("reaching out to API")
@@ -133,15 +143,23 @@ def route(prefix: str, bgp) -> str:
         return red_quote(ve)
     except Exception as e:
         logging.debug(e)
+        return
     if bgp.status_code != 200:
         return no_200(bgp.status_code)
     if not bgp.exists:
         return yellow_quote(f"No prefix exists for {prefix}")
     return green_quote(f"The route for {prefix} is {bgp.route}")
 
+@bot.command(name="route")
+async def route_command(ctx, prefix: str):
+    """Returns the active RIB entry for the passed in IP address"""
+    req = get_route(prefix, bgp_client)
+    if req:
+        logging.info(clean_msg(req))
+        await ctx.send(req)
 
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
-def origin(prefix: str, bgp) -> str:
+def get_origin(prefix: str, bgp) -> str:
     logging.info(f"origin request for {prefix}")
     try:
         bgp.get_origin(prefix)
@@ -156,9 +174,16 @@ def origin(prefix: str, bgp) -> str:
         return yellow_quote(f"No prefix exists for {prefix}")
     return green_quote(f"The origin AS for {prefix} is AS{bgp.origin}")
 
+@bot.command(name="origin")
+async def origin_command(ctx, prefix: str):
+    """Returns the origin AS number for the passed in IP address"""
+    req = get_origin(prefix, bgp_client)
+    if req:
+        logging.info(clean_msg(req))
+        await ctx.send(req)
 
 @cached(cache=TTLCache(maxsize=50, ttl=ONE_HOUR))
-def geoip(prefix: str, bgp) -> str:
+def get_geoip(prefix: str, bgp) -> str:
     logging.info(f"geoip request for {prefix}")
     try:
         bgp.get_geoip(prefix)
@@ -175,9 +200,16 @@ def geoip(prefix: str, bgp) -> str:
     country = bgp.geoip["Country"]
     return green_quote(f"{prefix} might be located in {city}, {country}")
 
+@bot.command(name="geoip")
+async def geoip_command(ctx, prefix: str):
+    """Returns a guesstimate of where the IP is geo located"""
+    req = get_geoip(prefix, bgp_client)
+    if req:
+        logging.info(clean_msg(req))
+        await ctx.send(req)
 
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
-def aspath(prefix: str, bgp) -> str:
+def get_aspath(prefix: str, bgp) -> str:
     logging.info(f"aspath request for {prefix}")
     try:
         bgp.get_as_path(prefix)
@@ -193,9 +225,16 @@ def aspath(prefix: str, bgp) -> str:
     path = " ".join(map(str, bgp.as_path))
     return green_quote(f"The AS path for {prefix} is {path}")
 
+@bot.command(name="aspath")
+async def aspath_command(ctx, prefix: str):
+    """Returns the AS path I see to get to the passed in IP address"""
+    req = get_aspath(prefix, bgp_client)
+    if req:
+        logging.info(clean_msg(req))
+        await ctx.send(req)
 
 @cached(cache=TTLCache(maxsize=20, ttl=FIVE_MINUTES))
-def roa(prefix: str, bgp) -> str:
+def get_roa(prefix: str, bgp) -> str:
     logging.info(f"roa request for {prefix}")
     try:
         bgp.get_roa(prefix)
@@ -214,9 +253,16 @@ def roa(prefix: str, bgp) -> str:
         status = "UNKNOWN (NO ROA)"
     return green_quote(f"The ROA status for {prefix} is {status}")
 
+@bot.command(name="roa")
+async def roa_command(ctx, prefix: str):
+    """Returns the ROA status of the passed in IP address"""
+    req = get_roa(prefix, bgp_client)
+    if req:
+        logging.info(clean_msg(req))
+        await ctx.send(req)
 
 @cached(cache=TTLCache(maxsize=50, ttl=ONE_HOUR))
-def asname(asnum: int, bgp) -> str:
+def get_asname(asnum: int, bgp) -> str:
     logging.info(f"asname request for {asnum}")
     try:
         num = int(asnum)
@@ -239,8 +285,16 @@ def asname(asnum: int, bgp) -> str:
 
     return green_quote(f"The AS name for {num} is {bgp.as_name}")
 
+@bot.command(name="asname")
+async def asname_command(ctx, asnum: str):
+    """Returns the AS name from the passed in AS number"""
+    req = get_asname(asnum, bgp_client)
+    if req:
+        logging.info(clean_msg(req))
+        await ctx.send(req)
+
 @cached(cache=TTLCache(maxsize=1, ttl=TWENTY_FOUR_HOURS))
-def asnames(bgp) -> Dict:
+def get_asnames(bgp) -> Dict:
     try:
         bgp.get_as_names()
     except Exception as e:
@@ -252,9 +306,8 @@ def asnames(bgp) -> Dict:
         return
     return bgp.all_as_names
 
-
 @cached(cache=TTLCache(maxsize=20, ttl=FIVE_MINUTES))
-def invalids(asnum: int, bgp) -> str:
+def get_invalids(asnum: int, bgp) -> str:
     try:
         num = int(asnum)
     except ValueError:
@@ -272,6 +325,17 @@ def invalids(asnum: int, bgp) -> str:
     else:
         return green_quote(f"AS{num} is not originating any invalid prefixes")
 
+@bot.command(name="invalids")
+async def invalids_command(ctx, asnum: str):
+    """Returns all RPKI invalid prefixes advertised from the passed in AS number"""
+    req = get_invalids(asnum, bgp_client)
+    if req:
+        logging.info(clean_msg(req))
+        if isinstance(req, list):
+            for msg in req:
+                await ctx.send(msg)
+        else:
+            await ctx.send(req)
 
 @cached(cache=TTLCache(maxsize=1, ttl=ONE_HOUR))
 def all_invalids(bgp) -> Dict:
@@ -287,9 +351,8 @@ def all_invalids(bgp) -> Dict:
         return
     return bgp.all_invalids
 
-
 @cached(cache=TTLCache(maxsize=20, ttl=FIVE_MINUTES))
-def vrps(asnum: int, bgp) -> str:
+def get_vrps(asnum: int, bgp) -> str:
     try:
         num = int(asnum)
     except ValueError:
@@ -309,9 +372,20 @@ def vrps(asnum: int, bgp) -> str:
     vrps = "\n\t".join(map(str, bgp.vrps))
     return split_text_green_quote(f"AS{asnum} has the following VRPs:\n\t{vrps}")
 
+@bot.command(name="vrps")
+async def vrps_command(ctx, asnum: str):
+    """Returns all Validated ROA Payloads for the passed in AS number"""
+    req = get_vrps(asnum, bgp_client)
+    if req:
+        logging.info(clean_msg(req))
+        if isinstance(req, list):
+            for msg in req:
+                await ctx.send(msg)
+        else:
+            await ctx.send(req)
 
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
-def sourced(asnum: int, bgp) -> str:
+def get_sourced(asnum: int, bgp) -> str:
     try:
         num = int(asnum)
     except ValueError:
@@ -333,136 +407,17 @@ def sourced(asnum: int, bgp) -> str:
         f"AS{asnum} is sourcing the following prefixes:\n\t{prefixes}"
     )
 
-
-def start(dis, bgp):
-    @dis.event
-    async def on_ready():
-        print(f"{dis.user} has connected to Discord!")
-
-    @dis.event
-    async def on_message(message):
-        # bot should not respond to its own message
-        if message.author == dis.user:
-            return
-
-        # Only respond to queries using the alert key
-        if not message.content.startswith(ALERTKEY):
-            return
-
-        # If there is no query, return help message and return
-        request = decode_request(message.content)
-        if len(request) == 0:
-            await send_help(message.channel)
-            return
-
-        # Only respond to approved commands
-        if request[0].lower() not in COMMANDS:
-            return
-
-        if request[0].lower() == "help":
-            await send_help(message.channel)
-            return
-
-        if request[0].lower() == "route":
-            req = route(request[1], bgp)
-            if req == "":
-                return
-            logging.info(req)
-            await message.channel.send(req)
-            return
-
-        elif request[0].lower() == "geoip":
-            req = geoip(request[1], bgp)
-            if req == "":
-                return
-            logging.info(req)
-            await message.channel.send(req)
-            return
-
-        elif request[0].lower() == "origin":
-            req = origin(request[1], bgp)
-            if req == "":
-                return
-            logging.info(req)
-            await message.channel.send(req)
-            return
-
-        elif request[0].lower() == "aspath":
-            req = aspath(request[1], bgp)
-            if req == "":
-                return
-            logging.info(req)
-            await message.channel.send(req)
-            return
-
-        elif request[0].lower() == "roa":
-            req = roa(request[1], bgp)
-            if req == "":
-                return
-            logging.info(req)
-            await message.channel.send(req)
-            return
-
-        elif request[0].lower() == "asname":
-            req = asname(request[1], bgp)
-            if req == "":
-                return
-            logging.info(req)
-            await message.channel.send(req)
-            return
-
-        elif request[0].lower() == "invalids":
-            req = invalids(request[1], bgp)
-            if req == "":
-                return
-            logging.info(req)
-            if type(req) == list:
-                for msg in req:
-                    await message.channel.send(msg)
-            else:
-                await message.channel.send(req)
-            return
-
-        elif request[0].lower() == "sourced":
-            req = sourced(request[1], bgp)
-            if req == "":
-                return
-            logging.info(req)
-            if type(req) == list:
-                for msg in req:
-                    await message.channel.send(msg)
-            else:
-                await message.channel.send(req)
-            return
-
-        elif request[0].lower() == "vrps":
-            req = vrps(request[1], bgp)
-            if req:
-                logging.info(req)
-                if type(req) == list:
-                    for msg in req:
-                        await message.channel.send(msg)
-                else:
-                    await message.channel.send(req)
-            return
-
-        elif request[0].lower() == "totals":
-            req = totals(bgp)
-            if req == "":
-                return
-            logging.info(req)
-            await message.channel.send(req)
-            return
-
+@bot.command(name="sourced")
+async def sourced_command(ctx, asnum: str):
+    """Returns all prefixes originated from the passed in AS number"""
+    req = get_sourced(asnum, bgp_client)
+    if req:
+        logging.info(clean_msg(req))
+        if isinstance(req, list):
+            for msg in req:
+                await ctx.send(msg)
         else:
-            await send_help(message.channel)
-
-    dis.run(TOKEN)
-
+            await ctx.send(req)
 
 if __name__ == "__main__":
-    intents = discord.Intents.default()
-    intents.message_content = True
-    dis = discord.Client(intents=intents)
-    bgp = bgpstuff.Client()
-    start(dis, bgp)
+    bot.run(TOKEN)

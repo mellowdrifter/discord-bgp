@@ -98,6 +98,12 @@ class ClientTest(unittest.TestCase):
         self.assertIn("AS65535 is a reserved/bogon ASN: RFC 7300 (Reserved 16-bit Last ASN)", res.text)
         mock_bgp.get_sourced_prefixes.assert_not_called()
 
+        # IANA Reserved 32-bit ASN 65552
+        res = bgpbot.get_asname("65552", mock_bgp)
+        self.assertEqual(res.type, "red")
+        self.assertIn("AS65552 is a reserved/bogon ASN: RFC 7249 / IANA (Reserved 32-bit)", res.text)
+        mock_bgp.get_as_name.assert_not_called()
+
         # Non-numeric/malformed ASN
         res = bgpbot.get_asname("not-an-asn", mock_bgp)
         self.assertEqual(res.type, "red")

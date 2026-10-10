@@ -9,7 +9,7 @@ import logging
 from discord.ext import commands
 from cachetools import cached, TTLCache
 from dotenv import load_dotenv
-from typing import Dict, List
+from typing import Dict, List, Union
 
 load_dotenv()
 
@@ -130,6 +130,9 @@ def get_totals(bgp) -> BotResponse:
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
 def get_route(prefix: str, bgp) -> BotResponse:
     logging.info(f"route request for {prefix}")
+    valid, reason = bogons.check_prefix(prefix)
+    if not valid:
+        return BotResponse(f"{prefix} is a bogon: {reason}" if reason else f"{prefix} is an invalid IP/prefix", "red")
     try:
         logging.info("reaching out to API")
         bgp.get_route(prefix)
@@ -147,6 +150,9 @@ def get_route(prefix: str, bgp) -> BotResponse:
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
 def get_origin(prefix: str, bgp) -> BotResponse:
     logging.info(f"origin request for {prefix}")
+    valid, reason = bogons.check_prefix(prefix)
+    if not valid:
+        return BotResponse(f"{prefix} is a bogon: {reason}" if reason else f"{prefix} is an invalid IP/prefix", "red")
     try:
         bgp.get_origin(prefix)
     except ValueError as ve:
@@ -163,6 +169,9 @@ def get_origin(prefix: str, bgp) -> BotResponse:
 @cached(cache=TTLCache(maxsize=50, ttl=ONE_HOUR))
 def get_geoip(prefix: str, bgp) -> BotResponse:
     logging.info(f"geoip request for {prefix}")
+    valid, reason = bogons.check_prefix(prefix)
+    if not valid:
+        return BotResponse(f"{prefix} is a bogon: {reason}" if reason else f"{prefix} is an invalid IP/prefix", "red")
     try:
         bgp.get_geoip(prefix)
     except ValueError as ve:
@@ -181,6 +190,9 @@ def get_geoip(prefix: str, bgp) -> BotResponse:
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
 def get_aspath(prefix: str, bgp) -> BotResponse:
     logging.info(f"aspath request for {prefix}")
+    valid, reason = bogons.check_prefix(prefix)
+    if not valid:
+        return BotResponse(f"{prefix} is a bogon: {reason}" if reason else f"{prefix} is an invalid IP/prefix", "red")
     try:
         bgp.get_as_path(prefix)
     except ValueError as ve:
@@ -198,6 +210,9 @@ def get_aspath(prefix: str, bgp) -> BotResponse:
 @cached(cache=TTLCache(maxsize=20, ttl=FIVE_MINUTES))
 def get_roa(prefix: str, bgp) -> BotResponse:
     logging.info(f"roa request for {prefix}")
+    valid, reason = bogons.check_prefix(prefix)
+    if not valid:
+        return BotResponse(f"{prefix} is a bogon: {reason}" if reason else f"{prefix} is an invalid IP/prefix", "red")
     try:
         bgp.get_roa(prefix)
     except ValueError as ve:
@@ -216,15 +231,14 @@ def get_roa(prefix: str, bgp) -> BotResponse:
     return BotResponse(f"The ROA status for {prefix} is {status}", "green")
 
 @cached(cache=TTLCache(maxsize=50, ttl=ONE_HOUR))
-def get_asname(asnum: int, bgp) -> BotResponse:
+def get_asname(asnum: Union[int, str], bgp) -> BotResponse:
     logging.info(f"asname request for {asnum}")
-    try:
-        num = int(asnum)
-    except ValueError:
-        return BotResponse(f"{asnum} is not an integer", "red")
-
-    if not bogons.valid_public_asn(num):
-        return BotResponse(f"{asnum} is not a valid ASN", "red")
+    num, err = bogons.parse_asn(asnum)
+    if err:
+        return BotResponse(f"{asnum} is not a valid ASN: {err}", "red")
+    valid, reason = bogons.check_asn(num)
+    if not valid:
+        return BotResponse(f"AS{num} is a reserved/bogon ASN: {reason}", "red")
     
     try:
         name = bgp.get_as_name(num)
@@ -235,9 +249,9 @@ def get_asname(asnum: int, bgp) -> BotResponse:
         return
     
     if not bgp.exists:
-        return BotResponse(f"No AS name exists for {asnum}", "yellow")
+        return BotResponse(f"No AS name exists for AS{num}", "yellow")
 
-    return BotResponse(f"The AS name for {num} is {bgp.as_name}", "green")
+    return BotResponse(f"The AS name for AS{num} is {bgp.as_name}", "green")
 
 @cached(cache=TTLCache(maxsize=1, ttl=TWENTY_FOUR_HOURS))
 def get_asnames(bgp) -> Dict:
@@ -267,31 +281,32 @@ def all_invalids(bgp) -> Dict:
     return bgp.all_invalids
 
 @cached(cache=TTLCache(maxsize=20, ttl=FIVE_MINUTES))
-def get_invalids(asnum: int, bgp) -> BotResponse:
-    try:
-        num = int(asnum)
-    except ValueError:
-        return BotResponse(f"{asnum} is not an integer", "red")
-
-    if not bogons.valid_public_asn(num):
-        return BotResponse(f"{asnum} is not a valid ASN", "red")
+def get_invalids(asnum: Union[int, str], bgp) -> BotResponse:
+    num, err = bogons.parse_asn(asnum)
+    if err:
+        return BotResponse(f"{asnum} is not a valid ASN: {err}", "red")
+    valid, reason = bogons.check_asn(num)
+    if not valid:
+        return BotResponse(f"AS{num} is a reserved/bogon ASN: {reason}", "red")
 
     invalids = all_invalids(bgp)
     if num in invalids:
         prefixes = "\n\t".join(map(str, invalids[num]))
         return BotResponse(
-            f"AS{asnum} is originating the following invalid prefixes:\n\t{prefixes}",
+            f"AS{num} is originating the following invalid prefixes:\n\t{prefixes}",
             "yellow",
         )
     else:
         return BotResponse(f"AS{num} is not originating any invalid prefixes", "green")
 
 @cached(cache=TTLCache(maxsize=20, ttl=FIVE_MINUTES))
-def get_vrps(asnum: int, bgp) -> BotResponse:
-    try:
-        num = int(asnum)
-    except ValueError:
-        return BotResponse(f"{asnum} is not an integer", "red")
+def get_vrps(asnum: Union[int, str], bgp) -> BotResponse:
+    num, err = bogons.parse_asn(asnum)
+    if err:
+        return BotResponse(f"{asnum} is not a valid ASN: {err}", "red")
+    valid, reason = bogons.check_asn(num)
+    if not valid:
+        return BotResponse(f"AS{num} is a reserved/bogon ASN: {reason}", "red")
 
     try:
         vrps = bgp.get_vrps(num)
@@ -305,14 +320,16 @@ def get_vrps(asnum: int, bgp) -> BotResponse:
     if not bgp.vrps:
         return BotResponse(f"AS{num} has no VRPs", "yellow")
     vrps = "\n\t".join(map(str, bgp.vrps))
-    return BotResponse(f"AS{asnum} has the following VRPs:\n\t{vrps}", "green")
+    return BotResponse(f"AS{num} has the following VRPs:\n\t{vrps}", "green")
 
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
-def get_sourced(asnum: int, bgp) -> BotResponse:
-    try:
-        num = int(asnum)
-    except ValueError:
-        return BotResponse(f"{asnum} is not an integer", "red")
+def get_sourced(asnum: Union[int, str], bgp) -> BotResponse:
+    num, err = bogons.parse_asn(asnum)
+    if err:
+        return BotResponse(f"{asnum} is not a valid ASN: {err}", "red")
+    valid, reason = bogons.check_asn(num)
+    if not valid:
+        return BotResponse(f"AS{num} is a reserved/bogon ASN: {reason}", "red")
 
     try:
         bgp.get_sourced_prefixes(num)
@@ -324,10 +341,10 @@ def get_sourced(asnum: int, bgp) -> BotResponse:
     if bgp.status_code != 200:
         return BotResponse(no_200(bgp.status_code), "plain")
     if not bgp.exists:
-        return BotResponse(f"AS{asnum} is not sourcing any prefixes", "yellow")
+        return BotResponse(f"AS{num} is not sourcing any prefixes", "yellow")
     prefixes = "\n\t".join(map(str, bgp.sourced))
     return BotResponse(
-        f"AS{asnum} is sourcing the following prefixes:\n\t{prefixes}", "green"
+        f"AS{num} is sourcing the following prefixes:\n\t{prefixes}", "green"
     )
 
 async def send_response(ctx, response: BotResponse):

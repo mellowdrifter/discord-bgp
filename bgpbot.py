@@ -112,7 +112,6 @@ Commands:
   % asname - Returns the AS name from the passed in AS number
   % geoip - Returns a guesstimate of where the IP is geo located
   % invalids - Returns all RPKI invalid prefixes advertised from the passed in AS number
-  % vrps - Returns all Validated ROA Payloads for the passed in AS number
   % sourced - Returns all prefixes originated from the passed in AS number
   % totals - Returns the current IPv4 and IPv6 active prefix count
 """

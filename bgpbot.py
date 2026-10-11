@@ -14,6 +14,7 @@ from typing import Dict, List, Union
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
+API_KEY = os.getenv("BGPSTUFF_API_KEY")
 ALERTKEY = "%"
 ONE_MINUTE = 60
 FIVE_MINUTES = 5 * ONE_MINUTE
@@ -28,7 +29,7 @@ logging.basicConfig(
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=ALERTKEY, intents=intents, help_command=None)
-bgp_client = bgpstuff.Client()
+bgp_client = bgpstuff.Client(api_key=API_KEY)
 
 def no_200(status_code: int) -> str:
     # TODO: this is wrong...r
@@ -84,6 +85,16 @@ async def on_message(message):
         return
 
     await bot.process_commands(message)
+ 
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(red_quote(f"Missing required argument: {error.param.name}"))
+    elif isinstance(error, commands.CommandNotFound):
+        pass
+    else:
+        logging.exception(f"Command error: {error}")
+        await ctx.send(red_quote(f"Error executing command: {error}"))
 
 @bot.command(name="help")
 async def help_command(ctx):
@@ -118,13 +129,18 @@ class BotResponse:
 @cached(cache=TTLCache(maxsize=1, ttl=FIVE_MINUTES))
 def get_totals(bgp) -> BotResponse:
     try:
-        bgp.get_totals()
+        stats = bgp.get_stats()
     except Exception as e:
+        logging.exception(f"Error querying stats: {e}")
         return BotResponse(str(e), "red")
-    if bgp.status_code != 200:
-        return BotResponse(no_200(bgp.status_code), "plain")
+    if not stats or not isinstance(stats, list):
+        return BotResponse("Unable to query bgpstuff.net API", "red")
+    latest = stats[-1]
+    totals = latest.get("totals", {})
+    v4 = totals.get("ipv4_count", 0)
+    v6 = totals.get("ipv6_count", 0)
     return BotResponse(
-        f"I see {bgp.total_v4} IPv4 and {bgp.total_v6} IPv6 prefixes active", "green"
+        f"I see {v4} IPv4 and {v6} IPv6 prefixes active", "green"
     )
 
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
@@ -135,17 +151,16 @@ def get_route(prefix: str, bgp) -> BotResponse:
         return BotResponse(f"{prefix} is a bogon: {reason}" if reason else f"{prefix} is an invalid IP/prefix", "red")
     try:
         logging.info("reaching out to API")
-        bgp.get_route(prefix)
+        res = bgp.get_route(prefix)
     except ValueError as ve:
         return BotResponse(str(ve), "red")
     except Exception as e:
-        logging.debug(e)
-        return
-    if bgp.status_code != 200:
-        return BotResponse(no_200(bgp.status_code), "plain")
-    if not bgp.exists:
+        logging.exception(f"Error querying route for {prefix}: {e}")
+        return BotResponse("Unable to query bgpstuff.net API", "red")
+    if not res or not res.get("routes"):
         return BotResponse(f"No prefix exists for {prefix}", "yellow")
-    return BotResponse(f"The route for {prefix} is {bgp.route}", "green")
+    route_prefix = res["routes"][0].get("prefix", prefix)
+    return BotResponse(f"The route for {prefix} is {route_prefix}", "green")
 
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
 def get_origin(prefix: str, bgp) -> BotResponse:
@@ -154,17 +169,15 @@ def get_origin(prefix: str, bgp) -> BotResponse:
     if not valid:
         return BotResponse(f"{prefix} is a bogon: {reason}" if reason else f"{prefix} is an invalid IP/prefix", "red")
     try:
-        bgp.get_origin(prefix)
+        res = bgp.get_origin(prefix)
     except ValueError as ve:
         return BotResponse(str(ve), "red")
     except Exception as e:
-        logging.debug(e)
-        return
-    if bgp.status_code != 200:
-        return BotResponse(no_200(bgp.status_code), "plain")
-    if not bgp.exists:
+        logging.exception(f"Error querying origin for {prefix}: {e}")
+        return BotResponse("Unable to query bgpstuff.net API", "red")
+    if not res or not res.get("origin"):
         return BotResponse(f"No prefix exists for {prefix}", "yellow")
-    return BotResponse(f"The origin AS for {prefix} is AS{bgp.origin}", "green")
+    return BotResponse(f"The origin AS for {prefix} is AS{res['origin']}", "green")
 
 @cached(cache=TTLCache(maxsize=50, ttl=ONE_HOUR))
 def get_geoip(prefix: str, bgp) -> BotResponse:
@@ -173,18 +186,16 @@ def get_geoip(prefix: str, bgp) -> BotResponse:
     if not valid:
         return BotResponse(f"{prefix} is a bogon: {reason}" if reason else f"{prefix} is an invalid IP/prefix", "red")
     try:
-        bgp.get_geoip(prefix)
+        res = bgp.get_geoip(prefix)
     except ValueError as ve:
         return BotResponse(str(ve), "red")
     except Exception as e:
-        logging.debug(e)
-        return
-    if bgp.status_code != 200:
-        return BotResponse(no_200(bgp.status_code), "plain")
-    if not bgp.exists:
+        logging.exception(f"Error querying geoip for {prefix}: {e}")
+        return BotResponse("Unable to query bgpstuff.net API", "red")
+    if not res or not res.get("city") or not res.get("country"):
         return BotResponse(f"No prefix exists for {prefix}", "yellow")
-    city = bgp.geoip["City"]
-    country = bgp.geoip["Country"]
+    city = res["city"]
+    country = res["country"]
     return BotResponse(f"{prefix} might be located in {city}, {country}", "green")
 
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
@@ -194,17 +205,15 @@ def get_aspath(prefix: str, bgp) -> BotResponse:
     if not valid:
         return BotResponse(f"{prefix} is a bogon: {reason}" if reason else f"{prefix} is an invalid IP/prefix", "red")
     try:
-        bgp.get_as_path(prefix)
+        res = bgp.get_as_path(prefix)
     except ValueError as ve:
         return BotResponse(str(ve), "red")
     except Exception as e:
-        logging.debug(e)
-        return
-    if bgp.status_code != 200:
-        return BotResponse(no_200(bgp.status_code), "plain")
-    if not bgp.exists:
+        logging.exception(f"Error querying aspath for {prefix}: {e}")
+        return BotResponse("Unable to query bgpstuff.net API", "red")
+    if not res or not res.get("as_path"):
         return BotResponse(f"No prefix exists for {prefix}", "yellow")
-    path = " ".join(map(str, bgp.as_path))
+    path = " ".join(map(str, res["as_path"]))
     return BotResponse(f"The AS path for {prefix} is {path}", "green")
 
 @cached(cache=TTLCache(maxsize=20, ttl=FIVE_MINUTES))
@@ -214,18 +223,16 @@ def get_roa(prefix: str, bgp) -> BotResponse:
     if not valid:
         return BotResponse(f"{prefix} is a bogon: {reason}" if reason else f"{prefix} is an invalid IP/prefix", "red")
     try:
-        bgp.get_roa(prefix)
+        res = bgp.get_roa(prefix)
     except ValueError as ve:
         return BotResponse(str(ve), "red")
     except Exception as e:
-        logging.debug(e)
-        return
-    if bgp.status_code != 200:
-        return BotResponse(no_200(bgp.status_code), "plain")
-    if not bgp.exists:
+        logging.exception(f"Error querying roa for {prefix}: {e}")
+        return BotResponse("Unable to query bgpstuff.net API", "red")
+    if not res or not res.get("roa") or res.get("roa") == "not-found":
         return BotResponse(f"No prefix exists for {prefix}", "yellow")
 
-    status = bgp.roa
+    status = res["roa"].upper()
     if status == "UNKNOWN":
         status = "UNKNOWN (NO ROA)"
     return BotResponse(f"The ROA status for {prefix} is {status}", "green")
@@ -241,44 +248,17 @@ def get_asname(asnum: Union[int, str], bgp) -> BotResponse:
         return BotResponse(f"AS{num} is a reserved/bogon ASN: {reason}", "red")
     
     try:
-        name = bgp.get_as_name(num)
+        res = bgp.get_as_name(num)
     except ValueError as ve:
         return BotResponse(str(ve), "red")
     except Exception as e:
-        logging.debug(e)
-        return
+        logging.exception(f"Error querying asname for {num}: {e}")
+        return BotResponse("Unable to query bgpstuff.net API", "red")
     
-    if not bgp.exists:
+    if not res or not res.get("as_name"):
         return BotResponse(f"No AS name exists for AS{num}", "yellow")
 
-    return BotResponse(f"The AS name for AS{num} is {bgp.as_name}", "green")
-
-@cached(cache=TTLCache(maxsize=1, ttl=TWENTY_FOUR_HOURS))
-def get_asnames(bgp) -> Dict:
-    try:
-        bgp.get_as_names()
-    except Exception as e:
-        logging.debug(e)
-        return
-    if bgp.status_code != 200:
-        # TODO: This really the best return?
-        logging.debug(bgp.status_code)
-        return
-    return bgp.all_as_names
-
-@cached(cache=TTLCache(maxsize=1, ttl=ONE_HOUR))
-def all_invalids(bgp) -> Dict:
-    print("Getting all invalids from API")
-    try:
-        bgp.get_invalids()
-    except Exception as e:
-        logging.debug(e)
-        return
-    if bgp.status_code != 200:
-        # TODO: This really the best return?
-        logging.debug(bgp.status_code)
-        return
-    return bgp.all_invalids
+    return BotResponse(f"The AS name for AS{num} is {res['as_name']}", "green")
 
 @cached(cache=TTLCache(maxsize=20, ttl=FIVE_MINUTES))
 def get_invalids(asnum: Union[int, str], bgp) -> BotResponse:
@@ -289,15 +269,23 @@ def get_invalids(asnum: Union[int, str], bgp) -> BotResponse:
     if not valid:
         return BotResponse(f"AS{num} is a reserved/bogon ASN: {reason}", "red")
 
-    invalids = all_invalids(bgp)
-    if num in invalids:
-        prefixes = "\n\t".join(map(str, invalids[num]))
-        return BotResponse(
-            f"AS{num} is originating the following invalid prefixes:\n\t{prefixes}",
-            "yellow",
-        )
-    else:
+    try:
+        res = bgp.get_invalids(num)
+    except Exception as e:
+        logging.exception(f"Error querying invalids for {num}: {e}")
+        return BotResponse("Unable to query bgpstuff.net API (Authentication required)", "red")
+
+    if not res or not isinstance(res, list):
         return BotResponse(f"AS{num} is not originating any invalid prefixes", "green")
+    
+    prefixes = "\n\t".join(r["prefix"] for r in res if isinstance(r, dict) and "prefix" in r)
+    if not prefixes:
+        return BotResponse(f"AS{num} is not originating any invalid prefixes", "green")
+
+    return BotResponse(
+        f"AS{num} is originating the following invalid prefixes:\n\t{prefixes}",
+        "yellow",
+    )
 
 @cached(cache=TTLCache(maxsize=20, ttl=FIVE_MINUTES))
 def get_vrps(asnum: Union[int, str], bgp) -> BotResponse:
@@ -309,18 +297,14 @@ def get_vrps(asnum: Union[int, str], bgp) -> BotResponse:
         return BotResponse(f"AS{num} is a reserved/bogon ASN: {reason}", "red")
 
     try:
-        vrps = bgp.get_vrps(num)
+        bgp.get_vrps(num)
+    except NotImplementedError:
+        return BotResponse("VRPs are not supported in the bgpstuff.net v3 API", "yellow")
     except ValueError as ve:
         return BotResponse(str(ve), "red")
     except Exception as e:
-        logging.debug(e)
-        return
-    if bgp.status_code != 200:
-        return BotResponse(no_200(bgp.status_code), "plain")
-    if not bgp.vrps:
-        return BotResponse(f"AS{num} has no VRPs", "yellow")
-    vrps = "\n\t".join(map(str, bgp.vrps))
-    return BotResponse(f"AS{num} has the following VRPs:\n\t{vrps}", "green")
+        logging.exception(f"Error querying vrps: {e}")
+        return BotResponse("Unable to query bgpstuff.net API", "red")
 
 @cached(cache=TTLCache(maxsize=20, ttl=ONE_MINUTE))
 def get_sourced(asnum: Union[int, str], bgp) -> BotResponse:
@@ -332,17 +316,22 @@ def get_sourced(asnum: Union[int, str], bgp) -> BotResponse:
         return BotResponse(f"AS{num} is a reserved/bogon ASN: {reason}", "red")
 
     try:
-        bgp.get_sourced_prefixes(num)
+        res = bgp.get_sourced_prefixes(num)
     except ValueError as ve:
         return BotResponse(str(ve), "red")
     except Exception as e:
-        logging.debug(e)
-        return
-    if bgp.status_code != 200:
-        return BotResponse(no_200(bgp.status_code), "plain")
-    if not bgp.exists:
+        logging.exception(f"Error querying sourced prefixes for {num}: {e}")
+        return BotResponse("Unable to query bgpstuff.net API", "red")
+
+    routes = res.get("routes") if res else None
+    if not routes:
         return BotResponse(f"AS{num} is not sourcing any prefixes", "yellow")
-    prefixes = "\n\t".join(map(str, bgp.sourced))
+
+    prefix_list = [r["prefix"] for r in routes if isinstance(r, dict) and "prefix" in r]
+    if not prefix_list:
+        return BotResponse(f"AS{num} is not sourcing any prefixes", "yellow")
+
+    prefixes = "\n\t".join(prefix_list)
     return BotResponse(
         f"AS{num} is sourcing the following prefixes:\n\t{prefixes}", "green"
     )

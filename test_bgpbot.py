@@ -29,9 +29,7 @@ class ClientTest(unittest.TestCase):
     @patch('bgpstuff.Client')
     def test_totals(self, mock_client):
         mock_bgp = mock_client.return_value
-        mock_bgp.status_code = 200
-        mock_bgp.total_v4 = 100
-        mock_bgp.total_v6 = 200
+        mock_bgp.get_stats.return_value = [{"totals": {"ipv4_count": 100, "ipv6_count": 200}}]
 
         result = bgpbot.get_totals(mock_bgp)
         expected = bgpbot.BotResponse("I see 100 IPv4 and 200 IPv6 prefixes active", "green")
@@ -112,15 +110,91 @@ class ClientTest(unittest.TestCase):
     @patch('bgpstuff.Client')
     def test_valid_public_asn_handling(self, mock_client):
         mock_bgp = mock_client.return_value
-        mock_bgp.status_code = 200
-        mock_bgp.exists = True
-        mock_bgp.as_name = "GOOGLE"
+        mock_bgp.get_as_name.return_value = {"as_name": "GOOGLE", "as_number": 15169}
 
         # AS15169 as string with prefix
         res = bgpbot.get_asname("AS15169", mock_bgp)
         self.assertEqual(res.type, "green")
         self.assertEqual("The AS name for AS15169 is GOOGLE", res.text)
         mock_bgp.get_as_name.assert_called_with(15169)
+
+    @patch('bgpstuff.Client')
+    def test_valid_ip_handling(self, mock_client):
+        mock_bgp = mock_client.return_value
+
+        # Test route
+        mock_bgp.get_route.return_value = {"routes": [{"prefix": "8.8.8.0/24"}]}
+        res = bgpbot.get_route("8.8.8.8", mock_bgp)
+        self.assertEqual(res.type, "green")
+        self.assertEqual(res.text, "The route for 8.8.8.8 is 8.8.8.0/24")
+
+        # Test origin
+        mock_bgp.get_origin.return_value = {"origin": 15169}
+        res = bgpbot.get_origin("8.8.8.8", mock_bgp)
+        self.assertEqual(res.type, "green")
+        self.assertEqual(res.text, "The origin AS for 8.8.8.8 is AS15169")
+
+        # Test geoip
+        mock_bgp.get_geoip.return_value = {"city": "Mountain View", "country": "United States"}
+        res = bgpbot.get_geoip("8.8.8.8", mock_bgp)
+        self.assertEqual(res.type, "green")
+        self.assertEqual(res.text, "8.8.8.8 might be located in Mountain View, United States")
+
+        # Test aspath
+        mock_bgp.get_as_path.return_value = {"as_path": [54054, 15169]}
+        res = bgpbot.get_aspath("8.8.8.8", mock_bgp)
+        self.assertEqual(res.type, "green")
+        self.assertEqual(res.text, "The AS path for 8.8.8.8 is 54054 15169")
+
+        # Test roa
+        mock_bgp.get_roa.return_value = {"roa": "valid"}
+        res = bgpbot.get_roa("8.8.8.8", mock_bgp)
+        self.assertEqual(res.type, "green")
+        self.assertEqual(res.text, "The ROA status for 8.8.8.8 is VALID")
+
+        # Test sourced
+        mock_bgp.get_sourced_prefixes.return_value = {"routes": [{"prefix": "8.8.8.0/24"}]}
+        res = bgpbot.get_sourced("15169", mock_bgp)
+        self.assertEqual(res.type, "green")
+        self.assertEqual(res.text, "AS15169 is sourcing the following prefixes:\n\t8.8.8.0/24")
+
+    @patch('bgpstuff.Client')
+    def test_nonexistent_handling(self, mock_client):
+        mock_bgp = mock_client.return_value
+
+        mock_bgp.get_route.return_value = {"routes": []}
+        res = bgpbot.get_route("1.2.3.4", mock_bgp)
+        self.assertEqual(res.type, "yellow")
+        self.assertEqual(res.text, "No prefix exists for 1.2.3.4")
+
+        mock_bgp.get_as_name.return_value = None
+        res = bgpbot.get_asname("12345", mock_bgp)
+        self.assertEqual(res.type, "yellow")
+        self.assertEqual(res.text, "No AS name exists for AS12345")
+
+    @patch('bgpstuff.Client')
+    def test_invalids_handling(self, mock_client):
+        mock_bgp = mock_client.return_value
+
+        # originating invalids
+        mock_bgp.get_invalids.return_value = [{"prefix": "1.2.3.0/24", "rpki": "invalid"}]
+        res = bgpbot.get_invalids("15169", mock_bgp)
+        self.assertEqual(res.type, "yellow")
+        self.assertIn("1.2.3.0/24", res.text)
+
+        # no invalids
+        mock_bgp.get_invalids.return_value = []
+        res = bgpbot.get_invalids("15170", mock_bgp)
+        self.assertEqual(res.type, "green")
+        self.assertEqual("AS15170 is not originating any invalid prefixes", res.text)
+
+    @patch('bgpstuff.Client')
+    def test_vrps_handling(self, mock_client):
+        mock_bgp = mock_client.return_value
+        mock_bgp.get_vrps.side_effect = NotImplementedError("VRPs are not supported in the v3 API.")
+        res = bgpbot.get_vrps("15169", mock_bgp)
+        self.assertEqual(res.type, "yellow")
+        self.assertEqual("VRPs are not supported in the bgpstuff.net v3 API", res.text)
 
 
 if __name__ == '__main__':
